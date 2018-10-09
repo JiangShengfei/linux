@@ -1,0 +1,149 @@
+#+TITLE:   LDAP安装及应用教程 
+#+AUTHOR:   Jiang Shengfei
+#+EMAIL:    1597294467@qq.com 
+#+LANGUAGE:  cn
+#+OPTIONS:   H:3 num:t toc:2 \n:nil @:t ::t |:t ^:nil -:t f:t *:t <:t
+#+OPTIONS:   TeX:t LaTeX:t skip:nil d:nil todo:t pri:nil tags:not-in-toc
+#+INFOJS_OPT: view:plain toc:t ltoc:t mouse:underline buttons:0 path:https://github.com/JiangShengfei/linux/blob/master/org-info-js/org-info.js
+#+STYLE: <link rel="stylesheet" type"text/css" href="https://github.com/JiangShengfei/linux/blob/master/org-info-js/org-manual.css" />
+#+STYLE: <style>body {font-size:14pt} code {font-weight:bold;font-size:100%; color:darkblue}</style>
+#+EXPORT_SELECT_TAGS: export
+#+EXPORT_EXCLUDE_TAGS: noexport
+#+LINK_UP:   
+#+LINK_HOME: 
+#+XSLT: 
+# (setq org-export-html-use-infojs nil)
+# (setq org-export-html-style nil)
+
+* 服务器安装
+** 安装环境
+   Openldap和freeradius都安装在debian8操作系统中。
+   : 服务器操作系统:debian 8
+   : 客户端操作系统:ubuntu 15.10
+   : Openldap:
+   : freeradius:
+** 安装步骤
+   安装服务器软件:
+   : sudo apt-get update
+   : sudo apt-get install slapd ldap-utils //安装openldap服务器软件,我们需要输入管理员密码
+   : sudo apt-get install apache2 php5 php5-mysql //安装phpldapadmin基础软件
+   : sudo apt-get install phpldapadmin //安装ldap web管理软件
+   : sudo apt-get install freeradius freeradius-ldap  //安装radius服务器软件
+   重新配置:
+   : 执行sudo dpkg-reconfigure slapd
+   : 我们需要回答的问题有：
+   : Omit OpenLDAP server configuration? 回答No
+   : DNS domain name: 基于输入的domain创建基本的目录结构。读上面的信息理解它是如何工作的。如果你有指向服务器的域名，可以使用域名。我使用test.swfu.edu.cn为例。
+   : Organization name: 我使用cs为例。
+   : Administrator password: 安装时输入密码。
+   : Database backend to use: HDB
+   : removed when slapd is purged? No
+   : Move old database? Yes
+   : Allow LDAPv2 protocol? NO
+   配置phpldapadmin:
+   : vim /etc/phpldapadmin/config.php
+   : $servers->setValue('server','host','127.0.0.1');
+   : $servers->setValue('server','base',array('dc=test,dc=swfu,dc=edu,dc=cn'));  //修改base
+   : $servers->setValue('login','bind_id','cn=admin,dc=test,dc=swfu,dc=edu,dc=cn'); //修改bind_di
+   : $config->custom->appearance['hide_template_warning'] = true;
+   然后我们在浏览器中输入 http://ldap_ip/phpldapadmin 来使用刚才输入的密码登陆。所有服务器的
+   工作都已完成，我们就可以在上面创建组和用户。
+* Ubuntu系统认证
+  软件安装:
+  : sudo apt-get install ldap-utils libpam-ldap libnss-ldap nslcd
+  : 在安装过程中程序会提示我们输入ldap服务器地址，帐号，密码等信息，按照提示输入即可
+  : sudo dpkg-reconfigure ldap-auth-config //可以重新进行配置
+  修改配置文件:
+  : vi /etc/ldap.conf
+  : 将uri ldapi:///192.168.200.136:389修改成
+  : uri ldap://192.168.200.136
+  系统认证方式中添加ldap:
+  : auth-client-config -t nss -p lac_ldap
+  使用认证通过后自动创建用户家目录:
+  : vi /etc/pam.d/common-session,追加内容:
+  : session required pam_mkhomedir.so skel=/etc/skel umask=0022
+  配置开启ldap认证方式:
+  : pam-auth-update
+  执行:
+  : update-rc.d nslcd enable
+  配置可在本机通过passwd更改用户密码:
+  : vi /etc/pam.d/common-password,去除其中的use_authtok参数
+  重启相关服务:
+  : /etc/init.d/nscd restart
+  登陆或者切换用户时即通过ldap进行认证，例如切换为ldap中的用户test:
+  : su - test
+* 无线热点认证
+** 在服务器中设置
+   : vim /etc/freeradius/client.conf
+   : client 192.168.200.0/24 {
+   :       secret = radius
+   : }
+   :
+   : vim /etc/freeradius/modules/ldap
+   : server = 127.0.0.1
+   : identity = "cn=admin,dc=test,dc=swfu,dc=edu,dc=cn"
+   : password = admin_password
+   : basedn = "dc=test,dc=swfu,dc=edu,dc=cn"
+   : 把set_auth_type = yes 取消注释
+   :
+   : 编辑default 下面的包含ldap 的字符在“authorize” 和 “authenticate”的会话下面，取消注释
+   : vim /etc/freeradius/sites-available/default
+   : authorize{
+   : ldap
+   : }
+   : authenticate{
+   : Auth-Type LDAP{
+   : ldap
+   : }
+   : }
+   :
+   : 编辑/etc/freeradius/sites-available/inner-tunnel文件,操作和上面的文件一样。
+   重启服务，配置生效:
+   : /etc/init.d/freeradius restart
+   所有的配置完成，看看是否成功，在客户端上执行:
+   : radtest 用户名 密码 服务器地址 端口 通讯密钥
+   : 例如：
+   : radtest zrg 123qwe 192.168.200.136 0 radius
+   : 如果返回: rad_recv: Access-Accept packet from host 192.168.200.136 port 1812, id=35, length=20 信息则说已完成配置。
+* proftpd使用ldap授权登录
+** 安装proftpd
+   : sudo apt-get install proftpd-mod-ldap
+** 配置proftpd
+   修改/etc/proftpd/proftpd.conf,去掉以下几行注释:
+   : DefaultRoot       ~/ftp
+   : RequireValidShell off
+   : Include /etc/proftpd/ldap.conf
+   修改/etc/proftpd/modules.conf去掉注释:
+   : LoadModule mod_ldap.c
+   修改配置文件/etc/proftpd/ldap.conf:
+   : <IfModule mod_ldap.c>
+   : LDAPServer ldap://localhost/??sub
+   : LDAPBindDN "cn=admin,dc=example,dc=com" "adminPassword"
+   : LDAPUsers ou=users,dc=example,dc=com (uid=%u)
+   : 
+   : LDAPForceDefaultGID on
+   : LDAPForceDefaultUID on
+   : 
+   : # proftpd uid & gid                                                             
+   : # $ id proftpd                                                                  
+   : LDAPDefaultGID 65534
+   : LDAPDefaultUID 107
+   : 
+   : # 设置用户的主目录。设置为 /home/ftp 作为 LDAP 用户登录的主目录 注意：要事先创建 /home/ftp 目录，并正确授>
+   : LDAPGenerateHomedir on
+   : # $ sudo mkdir /home/ftp                                                        
+   : # $ sudo chown proftpd:nogroup /home/ftp                                        
+   : LDAPGenerateHomedirPrefix /home/ftp
+   : LDAPForceGeneratedHomedir on
+   : # 在用户主目录下，创建用户个人目录。如果设置为 on，则所有用户共享同一主目录     
+   : LDAPGenerateHomedirPrefixNoUsername off
+   : # 如果用户主目录不存在，创建它                                                  
+   : CreateHome on
+   : </IfModule>
+   其中的LDAPDefaultUID与LDAPDefaultGID为proftpd用户的uid与gid，可以通过一下命令查看:
+   : cat /etc/passwd | grep proftpd
+   创建FTP目录，我们在home目录下建立FTP目录，并赋予相应的权限:
+   : sudo mkdir /home/ftp
+   : sudo chown proftpd:nogroup /home/ftp
+   重启proftpd服务:
+   : service proftpd restart
